@@ -14,6 +14,7 @@ shift 2
 
 timeout -k 1 30 python3 - "$dir" "$history" "$@" <<'PY'
 import json
+import fcntl
 import os
 import re
 import stat
@@ -37,6 +38,10 @@ def regular(path):
 
 
 try:
+  lock = os.open(str(history) + '.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+  if not stat.S_ISREG(os.fstat(lock).st_mode):
+    sys.exit(0)
+  fcntl.flock(lock, fcntl.LOCK_EX)
   # A save can fail, or an older asynchronous write can still be pending.
   # Deleting files mentioned by the actual saved history would break restart.
   if history.exists() or history.is_symlink():

@@ -29,6 +29,8 @@ Item {
   property string historyNotice: ""
   property bool watchersStarted: false
   property var capturesDuringLoad: []
+  property bool saveRequested: false
+  property bool reloadRequested: true
   // Shares the [menu] surface tokens — themes that style the menu also
   // style the clipboard. Selected-row colors composed in the
   // singleton so consumers drop them straight into Rectangle bindings.
@@ -90,16 +92,30 @@ Item {
 
   function saveHistory() {
     if (!root.historyWritable) return
-    var kept = root.history.slice(0, root.historyLimit)
-    historyFile.setText(JSON.stringify(kept, null, 2) + "\n")
+    root.saveRequested = true
+    root.pumpStorage()
+  }
+
+  function pumpStorage() {
+    if (loadProc.running || saveProc.running) return
+    if (root.saveRequested && root.historyWritable) {
+      root.saveRequested = false
+      saveProc.snapshot = JSON.stringify(root.history.slice(0, root.historyLimit))
+      saveProc.stdinEnabled = true
+      saveProc.running = true
+    } else if (root.reloadRequested) {
+      root.reloadRequested = false
+      root.historyWritable = false
+      loadProc.running = true
+    }
   }
 
   function pruneText() {
     if (!root.historyWritable) return
-    // The helper protects both this list and the actual saved history, including
-    // when FileView reports a failed atomic commit as saved.
+    // Protect both pending captures and the last successfully saved history.
     Quickshell.execDetached(["bash", root.omarchyPath + "/shell/plugins/clipboard/prune-text.sh", root.textDir, root.historyPath]
-      .concat(ClipboardHistory.largeTextNames(root.history)))
+      .concat(ClipboardHistory.largeTextNames(root.history))
+      .concat(ClipboardHistory.largeTextNames(root.capturesDuringLoad)))
   }
 
   function addClipboardEntry(entry) {
@@ -136,6 +152,7 @@ Item {
   }
 
   function confirmClearHistory() {
+    if (!root.historyWritable) return
     root.history = ClipboardHistory.clearHistory()
     root.saveHistory()
     root.selectedIndex = 0
@@ -147,6 +164,7 @@ Item {
   }
 
   function removeDisplayIndex(index) {
+    if (!root.historyWritable) return
     if (index < 0 || index >= displayModel.count) return
 
     var row = displayModel.get(index)
@@ -292,7 +310,7 @@ Item {
     }
   }
 
-  Component.onCompleted: loadProc.running = true
+  Component.onCompleted: root.pumpStorage()
 
   ListModel { id: displayModel }
 
@@ -301,20 +319,14 @@ Item {
     referenceItem: card
   }
 
-  // Read only through the bounded loader. Watch outside edits without asking
-  // FileView to load the unbounded original.
+  // Watch outside edits without asking FileView to read or write the file.
+  // The storage processes serialize all writes, including migration commits.
   FileView {
     id: historyFile
     path: root.historyPath
     preload: false
-    atomicWrites: true
     printErrors: false
     watchChanges: true
-    onSaved: root.pruneText()
-    onSaveFailed: {
-      root.historyNotice = "Clipboard history could not be saved · previous data kept"
-      console.warn("clipboard: history save failed")
-    }
     onFileChanged: historyReloadTimer.restart()
   }
 
@@ -322,12 +334,41 @@ Item {
     id: historyReloadTimer
     interval: 200
     onTriggered: {
-      if (loadProc.running) {
-        historyReloadTimer.restart()
-        return
+      root.reloadRequested = true
+      root.pumpStorage()
+    }
+  }
+
+  // A copy evicted during its first minute is still protected by the capture
+  // grace period. Revisit it even if the user never copies anything else.
+  Timer {
+    interval: 60000
+    repeat: true
+    running: root.historyWritable
+    onTriggered: root.pruneText()
+  }
+
+  Process {
+    id: saveProc
+    property string snapshot: ""
+    command: ["bash", root.omarchyPath + "/shell/plugins/clipboard/save-history.sh", root.historyPath, String(ClipboardHistory.historyFileLimit)]
+    stderr: StdioCollector { id: saveWarnings; waitForEnd: true }
+    onStarted: {
+      saveProc.write(saveProc.snapshot)
+      saveProc.stdinEnabled = false
+      saveProc.snapshot = ""
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) root.pruneText()
+      else {
+        root.historyNotice = "Clipboard history could not be saved · previous data kept"
+        console.warn("clipboard: history save failed: " + saveWarnings.text.trim())
+        // Preserve the unsaved in-memory entries; an own-file notification
+        // from an earlier write must not reload an older snapshot over them.
+        root.reloadRequested = false
+        historyReloadTimer.stop()
       }
-      root.historyWritable = false
-      loadProc.running = true
+      Qt.callLater(root.pumpStorage)
     }
   }
 
@@ -344,12 +385,15 @@ Item {
         root.loadHistory(loadOutput.text)
         if (loadWarnings.text.indexOf("history set aside") >= 0)
           root.historyNotice = "Previous clipboard history set aside · backup kept"
+        else if (loadWarnings.text.indexOf("some entries kept only") >= 0)
+          root.historyNotice = "Some older entries kept in recovery backup"
         if (root.historyWritable) {
           var pending = root.capturesDuringLoad
           root.capturesDuringLoad = []
           for (var i = pending.length - 1; i >= 0; i--) root.addClipboardEntry(pending[i])
           if (!root.watchersStarted) initProc.running = true
           else if (!textWatchProc.running || !imageWatchProc.running) watchRestartTimer.restart()
+          root.pruneText()
         }
       } else {
         root.historyNotice = "Clipboard history unavailable · existing data kept"
@@ -359,6 +403,7 @@ Item {
         textWatchProc.running = false
         imageWatchProc.running = false
       }
+      Qt.callLater(root.pumpStorage)
     }
   }
 

@@ -28,13 +28,26 @@ ui.opened=true
 action.running=false
 qmlFunction('copySelected',{root:ui})({entryType:'text',fullText:'selected snapshot',historyIndex:0})
 assert(!action.running && ui.opened,'clipboard picker waits for a successful load before actions')
-const saves=[]
-const pending={historyWritable:false,history:[{type:'text',text:'pending'}],historyLimit:500}
-qmlFunction('saveHistory',{root:pending,historyFile:{setText:raw=>saves.push(raw)}})()
-assertEqual(saves.length,0,'clipboard picker does not overwrite a history that failed to load')
+const loadProc={running:false},saveProc={running:false}
+const pending={historyWritable:false,history:[{type:'text',text:'pending'}],historyLimit:500,saveRequested:false,reloadRequested:false}
+pending.pumpStorage=qmlFunction('pumpStorage',{root:pending,loadProc,saveProc})
+pending.saveHistory=qmlFunction('saveHistory',{root:pending})
+pending.saveHistory()
+assert(!saveProc.running,'clipboard picker does not overwrite a history that failed to load')
 pending.historyWritable=true
-qmlFunction('saveHistory',{root:pending,historyFile:{setText:raw=>saves.push(raw)}})()
-assertEqual(JSON.parse(saves[0])[0].text,'pending','clipboard picker saves only after a successful load')
+pending.saveHistory()
+assertEqual(JSON.parse(saveProc.snapshot)[0].text,'pending','clipboard picker saves only after a successful load')
+pending.history=[{type:'text',text:'newest'}]
+pending.saveHistory()
+pending.reloadRequested=true
+pending.pumpStorage()
+assert(!loadProc.running,'clipboard defers a reload until the save finishes')
+saveProc.running=false
+pending.pumpStorage()
+assertEqual(JSON.parse(saveProc.snapshot)[0].text,'newest','clipboard queued save includes the newest capture')
+saveProc.running=false
+pending.pumpStorage()
+assert(loadProc.running && !pending.historyWritable,'clipboard reload starts after queued saves complete')
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'clipboard-upgrade-'))
 const state = path.join(temp, 'omarchy')
 const textDir = path.join(state, 'clipboard-text')
@@ -78,9 +91,10 @@ try {
   assert(Buffer.byteLength(result.stdout)<=c.historyFileLimit,'clipboard migration returns bounded history')
   const overCount = JSON.stringify(Array.from({length:501},(_,i)=>'entry '+i))
   result = load(overCount)
-  assertEqual(result.status,3,'clipboard refuses migration that would silently exceed retention')
-  assertEqual(fs.readFileSync(historyPath,'utf8'),overCount,'clipboard leaves unmanageable history untouched')
-  assert(result.stderr.includes('original left untouched'),'clipboard explains a refused migration')
+  assertEqual(result.status,0,'clipboard loads history above the entry limit')
+  assertEqual(JSON.parse(result.stdout).length,500,'clipboard retains the newest entries within the limit')
+  assert(fs.readdirSync(state).filter(n=>n.startsWith('clipboard-history.json.migrated-')).some(n=>fs.readFileSync(path.join(state,n),'utf8')===overCount),'clipboard backs up every entry before applying retention')
+  assert(result.stderr.includes('some entries kept only'),'clipboard explains the recovery backup')
   result = load(JSON.stringify(['a'.repeat(65533)+'\\\"\n😀日本','\u0085','\ufeff']))
   entries = c.parseHistory(result.stdout,500)
   assertEqual(entries.length,2,'clipboard loader agrees with JavaScript whitespace rules')

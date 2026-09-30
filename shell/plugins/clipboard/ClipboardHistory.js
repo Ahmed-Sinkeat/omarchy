@@ -6,12 +6,10 @@ var entryTextLimit = 256 * 1024
 // The longest line the watcher can legitimately send: an entry at the limit
 // whose every character JSON-escapes to six.
 var captureLineLimit = entryTextLimit * 6 + 64
-// Serialized size of everything kept, newest first. Past it the oldest entries
-// are dropped, the same way the entry-count limit already drops them.
+// UTF-8 bytes of compact serialized history, including array punctuation.
 var historyBudget = 8 * 1024 * 1024
-// Largest file load-history.sh accepts. It must cover the heaviest history the
-// budget allows, every kept unit a three-byte character, or the loader would
-// reject a file the overlay wrote itself.
+// Upper bound on the JSON transferred to QML. Legacy files can be larger;
+// load-history.sh streams them into the stricter historyBudget before loading.
 var historyFileLimit = 32 * 1024 * 1024
 
 // A text copy over entryTextLimit is kept as a file instead, like an image, with
@@ -35,7 +33,19 @@ function sizeLabel(bytes) {
 }
 
 function entrySize(entry) {
-  return JSON.stringify(entry).length
+  var text = JSON.stringify(entry)
+  var bytes = 1 // A comma between entries (conservatively also for the last).
+  for (var i = 0; i < text.length; i++) {
+    var code = text.charCodeAt(i)
+    if (code < 0x80) bytes++
+    else if (code < 0x800) bytes += 2
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length
+      && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) {
+      bytes += 4
+      i++
+    } else bytes += 3
+  }
+  return bytes
 }
 
 function normalizeEntry(value) {
@@ -98,7 +108,7 @@ function parseHistory(raw, limit) {
 
   var max = limit === undefined || limit === null ? Infinity : Math.max(0, Number(limit) || 0)
   var next = []
-  var used = 0
+  var used = 2
   var largeUsed = 0
   for (var i = 0; i < parsed.length && next.length < max; i++) {
     var entry = normalizeEntry(parsed[i])
@@ -123,7 +133,7 @@ function addEntry(history, entry, limit) {
 
   var key = entryKey(normalized)
   var next = [normalized]
-  var used = entrySize(normalized)
+  var used = 2 + entrySize(normalized)
   var largeUsed = normalized.type === "largetext" ? normalized.bytes : 0
   var values = Array.isArray(history) ? history : []
 
