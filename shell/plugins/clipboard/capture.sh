@@ -33,14 +33,14 @@ trap 'rm -f -- "$tmp" "$converted"' EXIT
 
 [[ ${CLIPBOARD_STATE:-} == "sensitive" ]] && exit 0
 
+# Password managers may mark a copy only through its MIME types. If lookup
+# fails, skip even a watched payload already on stdin: its hint is unknown.
 types=$(timeout -k 1 "$READ_DEADLINE" wl-paste --list-types 2>/dev/null)
-if (( $? != 0 )) && [[ -z ${1:-} ]]; then
+if (( $? != 0 )); then
   printf '{"type":"skipped","reason":"types-unavailable"}\n'
   exit 0
 fi
 
-# A watched copy is already on stdin. Its owner may have exited by the time
-# MIME discovery runs, so failure there must not discard the delivered payload.
 if grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
   exit 0
 fi
