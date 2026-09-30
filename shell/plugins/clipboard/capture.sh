@@ -31,13 +31,17 @@ tmp=
 converted=
 trap 'rm -f -- "$tmp" "$converted"' EXIT
 
+[[ ${CLIPBOARD_STATE:-} == "sensitive" ]] && exit 0
+
 types=$(timeout -k 1 "$READ_DEADLINE" wl-paste --list-types 2>/dev/null)
-if (( $? != 0 )); then
+if (( $? != 0 )) && [[ -z ${1:-} ]]; then
   printf '{"type":"skipped","reason":"types-unavailable"}\n'
   exit 0
 fi
 
-if [[ ${CLIPBOARD_STATE:-} == "sensitive" ]] || grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
+# A watched copy is already on stdin. Its owner may have exited by the time
+# MIME discovery runs, so failure there must not discard the delivered payload.
+if grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
   exit 0
 fi
 

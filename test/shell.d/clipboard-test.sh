@@ -649,8 +649,20 @@ sleep 10
 SCRIPT
 start=$SECONDS
 capture_output=$(printf text | bounds_capture env CLIPBOARD_READ_DEADLINE=1)
-(( SECONDS - start <= 3 )) && [[ $capture_output == '{"type":"skipped","reason":"types-unavailable"}' ]] || fail "clipboard capture bounds type detection at the read deadline"
-pass "clipboard capture bounds type detection at the read deadline"
+(( SECONDS - start <= 3 )) && [[ $(jq -r .text <<<"$capture_output") == text ]] || fail "clipboard capture bounds type detection and keeps watched text"
+pass "clipboard capture bounds type detection and keeps watched text"
+
+capture_output=$(printf text | bounds_capture_as '' env CLIPBOARD_READ_DEADLINE=1)
+[[ $capture_output == '{"type":"skipped","reason":"types-unavailable"}' ]] || fail "clipboard one-shot capture requires type detection"
+pass "clipboard one-shot capture requires type detection"
+
+printf '#!/bin/bash\nexit 1\n' >"$TMPDIR/bounds/bin/wl-paste"
+capture_output=$(printf 'owner already exited' | bounds_capture env)
+[[ $(jq -r .text <<<"$capture_output") == 'owner already exited' ]] || fail "clipboard keeps watched text after the source exits"
+pass "clipboard keeps watched text after the source exits"
+capture_output=$(printf secret | bounds_capture env CLIPBOARD_STATE=sensitive)
+[[ -z $capture_output ]] || fail "clipboard ignores sensitive watched text without MIME metadata"
+pass "clipboard ignores sensitive watched text without MIME metadata"
 
 printf '{"type":"text","text":"https://example.com/selected"}' \
   | BROWSER_OUT="$TMPDIR/browser" PATH="$TMPDIR/bin:$PATH" "$ROOT/bin/omarchy-clipboard-open" --stdin
