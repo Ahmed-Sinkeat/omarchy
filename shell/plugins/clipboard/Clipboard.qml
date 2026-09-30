@@ -293,20 +293,26 @@ Item {
 
   function runEntryAction(row, command) {
     var entry = root.history[row.historyIndex]
-    if (!entry || textActionProc.running) return
-    textActionProc.command = command
-    textActionProc.entryJson = JSON.stringify(entry)
-    textActionProc.stdinEnabled = true
-    textActionProc.running = true
+    if (!entry) return
+    var action = entryActionComponent.createObject(root, {
+      command: command,
+      entryJson: JSON.stringify(entry)
+    })
+    action.running = true
   }
 
-  Process {
-    id: textActionProc
-    property string entryJson: ""
-    onStarted: {
-      textActionProc.write(textActionProc.entryJson)
-      textActionProc.stdinEnabled = false
-      textActionProc.entryJson = ""
+  Component {
+    id: entryActionComponent
+    Process {
+      id: action
+      property string entryJson: ""
+      stdinEnabled: true
+      onStarted: {
+        action.write(action.entryJson)
+        action.stdinEnabled = false
+        action.entryJson = ""
+      }
+      onExited: action.destroy()
     }
   }
 

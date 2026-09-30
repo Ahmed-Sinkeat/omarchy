@@ -15,19 +15,25 @@ function qmlFunction(name, context) {
   const end=qml.indexOf('\n  }',start)+4
   return vm.runInNewContext('('+qml.slice(start,end)+')',context)
 }
-const action={running:false,stdinEnabled:false}
+const actions=[]
+const component={createObject:(_parent,properties)=>{const action={...properties,stdinEnabled:true};actions.push(action);return action}}
 const ui={historyWritable:true,opened:true,history:[{type:'text',text:'selected snapshot'}]}
-ui.runEntryAction=qmlFunction('runEntryAction',{root:ui,textActionProc:action})
+ui.runEntryAction=qmlFunction('runEntryAction',{root:ui,entryActionComponent:component})
 ui.omarchyPath=root
 qmlFunction('copySelected',{root:ui,Quickshell:{execDetached:()=>fail('inline copy should use the selected snapshot')}})({entryType:'text',fullText:'selected snapshot',historyIndex:0})
+const action=actions[0]
 assertEqual(JSON.parse(action.entryJson).text,'selected snapshot','clipboard picker sends the full selected entry rather than a saved position')
 assert(action.running && action.stdinEnabled,'clipboard picker opens the action pipe')
 assert(action.command.includes('--stdin') && action.command.includes('--copy-only'),'clipboard picker requests snapshot copy without typing')
+ui.opened=true
+qmlFunction('openSelected',{root:ui})({entryType:'text',historyIndex:0})
+qmlFunction('copySelected',{root:ui})({entryType:'text',fullText:'selected snapshot',historyIndex:0})
+assertEqual(actions.length,3,'clipboard copy starts while an earlier editor action remains running')
+assert(actions[1].running && actions[2].running,'clipboard actions have independent process lifetimes')
 ui.historyWritable=false
 ui.opened=true
-action.running=false
 qmlFunction('copySelected',{root:ui})({entryType:'text',fullText:'selected snapshot',historyIndex:0})
-assert(!action.running && ui.opened,'clipboard picker waits for a successful load before actions')
+assert(actions.length===3 && ui.opened,'clipboard picker waits for a successful load before actions')
 const loadProc={running:false},saveProc={running:false}
 const pending={historyWritable:false,history:[{type:'text',text:'pending'}],historyLimit:500,saveRequested:false,reloadRequested:false}
 pending.pumpStorage=qmlFunction('pumpStorage',{root:pending,loadProc,saveProc})
