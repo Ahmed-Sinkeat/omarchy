@@ -8,6 +8,33 @@ const fs = require('fs')
 const os = require('os')
 const cp = require('child_process')
 const c = requireFromRoot('shell/plugins/clipboard/ClipboardHistory.js')
+const vm = require('vm')
+const qml = fs.readFileSync(path.join(root,'shell/plugins/clipboard/Clipboard.qml'),'utf8')
+function qmlFunction(name, context) {
+  const start=qml.indexOf('function '+name+'(')
+  const end=qml.indexOf('\n  }',start)+4
+  return vm.runInNewContext('('+qml.slice(start,end)+')',context)
+}
+const action={running:false,stdinEnabled:false}
+const ui={historyWritable:true,opened:true,history:[{type:'text',text:'selected snapshot'}]}
+ui.runEntryAction=qmlFunction('runEntryAction',{root:ui,textActionProc:action})
+ui.omarchyPath=root
+qmlFunction('copySelected',{root:ui,Quickshell:{execDetached:()=>fail('inline copy should use the selected snapshot')}})({entryType:'text',fullText:'selected snapshot',historyIndex:0})
+assertEqual(JSON.parse(action.entryJson).text,'selected snapshot','clipboard picker sends the full selected entry rather than a saved position')
+assert(action.running && action.stdinEnabled,'clipboard picker opens the action pipe')
+assert(action.command.includes('--stdin') && action.command.includes('--copy-only'),'clipboard picker requests snapshot copy without typing')
+ui.historyWritable=false
+ui.opened=true
+action.running=false
+qmlFunction('copySelected',{root:ui})({entryType:'text',fullText:'selected snapshot',historyIndex:0})
+assert(!action.running && ui.opened,'clipboard picker waits for a successful load before actions')
+const saves=[]
+const pending={historyWritable:false,history:[{type:'text',text:'pending'}],historyLimit:500}
+qmlFunction('saveHistory',{root:pending,historyFile:{setText:raw=>saves.push(raw)}})()
+assertEqual(saves.length,0,'clipboard picker does not overwrite a history that failed to load')
+pending.historyWritable=true
+qmlFunction('saveHistory',{root:pending,historyFile:{setText:raw=>saves.push(raw)}})()
+assertEqual(JSON.parse(saves[0])[0].text,'pending','clipboard picker saves only after a successful load')
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'clipboard-upgrade-'))
 const state = path.join(temp, 'omarchy')
 const textDir = path.join(state, 'clipboard-text')
