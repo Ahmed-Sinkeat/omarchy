@@ -1,0 +1,97 @@
+#!/bin/bash
+
+set -euo pipefail
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
+
+run_node_test <<'JS'
+const fs = require('fs')
+const os = require('os')
+const cp = require('child_process')
+const c = requireFromRoot('shell/plugins/clipboard/ClipboardHistory.js')
+const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'clipboard-upgrade-'))
+const state = path.join(temp, 'omarchy')
+const textDir = path.join(state, 'clipboard-text')
+const historyPath = path.join(state, 'clipboard-history.json')
+fs.mkdirSync(textDir, {recursive:true})
+function load(raw, ceiling = c.historyFileLimit) {
+  fs.writeFileSync(historyPath, raw)
+  return cp.spawnSync('bash', [path.join(root, 'shell/plugins/clipboard/load-history.sh'), historyPath, String(ceiling)], {encoding:'utf8', maxBuffer:c.historyFileLimit + 1024, env:{...process.env, XDG_STATE_HOME:temp}})
+}
+function prune(...names) {
+  const result = cp.spawnSync('bash', [path.join(root, 'shell/plugins/clipboard/prune-text.sh'), textDir, historyPath, ...names], {encoding:'utf8'})
+  assertEqual(result.status, 0, 'clipboard prune completes')
+}
+function stale(letter) {
+  const name = letter.repeat(64) + '.txt'
+  fs.writeFileSync(path.join(textDir, name), letter)
+  const then = new Date(Date.now()-180000)
+  fs.utimesSync(path.join(textDir, name), then, then)
+  return name
+}
+try {
+  const largeText = 'x'.repeat(3 * 1024 * 1024) + '\n日本 😀\u0000'
+  let result = load(JSON.stringify([{type:'text',text:'newest'},{type:'text',text:largeText},{type:'text',text:'older'}]))
+  assertEqual(result.status, 0, 'clipboard migrates existing history')
+  let entries = c.parseHistory(result.stdout, 500)
+  assertEqual(entries.length, 3, 'clipboard upgrade preserves oversized old entries')
+  assertEqual(entries[1].type, 'largetext', 'clipboard upgrade stores oversized text as a file')
+  assertEqual(fs.readFileSync(entries[1].path,'utf8'), largeText, 'clipboard upgrade preserves full Unicode and control text')
+  assertDeepEqual(JSON.parse(fs.readFileSync(historyPath,'utf8')), entries, 'clipboard upgrade synchronizes disk and picker before load')
+  const row = c.displayRows(entries,'older',50)[0]
+  assertEqual(JSON.parse(fs.readFileSync(historyPath,'utf8'))[row.index].text,'older', 'clipboard selection reads the correct migrated position')
+  const original = fs.readFileSync(historyPath,'utf8')
+  result = cp.spawnSync('bash',[path.join(root,'shell/plugins/clipboard/load-history.sh'),historyPath,String(c.historyFileLimit)],{encoding:'utf8',env:{...process.env,XDG_STATE_HOME:temp}})
+  assertEqual(fs.readFileSync(historyPath,'utf8'),original,'clipboard migration is idempotent')
+  assertEqual(result.status,0,'clipboard reload succeeds')
+
+  result = load(JSON.stringify(Array.from({length:34},(_,i)=>({type:'text',text:i+':'+ 'z'.repeat(1024*1024)}))))
+  assertEqual(result.status,0,'clipboard streams legacy history above the loader ceiling')
+  entries = c.parseHistory(result.stdout,500)
+  assertEqual(entries.length,34,'clipboard migration preserves history above the old byte budget')
+  assert(Buffer.byteLength(result.stdout)<=c.historyFileLimit,'clipboard migration returns bounded history')
+  const overCount = JSON.stringify(Array.from({length:501},(_,i)=>'entry '+i))
+  result = load(overCount)
+  assertEqual(result.status,3,'clipboard refuses migration that would silently exceed retention')
+  assertEqual(fs.readFileSync(historyPath,'utf8'),overCount,'clipboard leaves unmanageable history untouched')
+  assert(result.stderr.includes('original left untouched'),'clipboard explains a refused migration')
+  result = load(JSON.stringify(['a'.repeat(65533)+'\\\"\n😀日本','\u0085','\ufeff']))
+  entries = c.parseHistory(result.stdout,500)
+  assertEqual(entries.length,2,'clipboard loader agrees with JavaScript whitespace rules')
+  assertEqual(entries[0].text,'a'.repeat(65533)+'\\\"\n😀日本','clipboard streaming decoder preserves text across chunk boundaries')
+  result = load('["'+ 'x'.repeat(65530)+'\\ud83d\\ude00'+'"]')
+  assertEqual(c.parseHistory(result.stdout,500)[0].text,'x'.repeat(65530)+'😀','clipboard streaming decoder preserves escaped surrogate pairs across chunk boundaries')
+  for (const raw of ['[NaN]','[][]','[Infinity]','["unterminated]','[1,]']) {
+    result=load(raw)
+    assertEqual(result.stdout,'[]','clipboard loader rejects malformed JSON '+raw)
+    assert(!fs.existsSync(historyPath),'clipboard preserves rejected original '+raw)
+    assert(result.stderr.length>0,'clipboard rejection explains recovery '+raw)
+  }
+  result=load(' \n\t ')
+  assertEqual(result.stdout,'[]','clipboard loads whitespace-only history as empty')
+  assert(fs.existsSync(historyPath),'clipboard does not reject whitespace-only history')
+
+  const protectedName=stale('a'), orphan=stale('b')
+  fs.writeFileSync(historyPath,'[]')
+  fs.writeFileSync(historyPath+'.rejected-probe','broken '+protectedName)
+  prune()
+  assert(fs.existsSync(path.join(textDir,protectedName)),'clipboard protects files referenced by rejected histories')
+  assert(!fs.existsSync(path.join(textDir,orphan)),'clipboard still cleans unreferenced files after rejection')
+  const onDisk=stale('c')
+  fs.writeFileSync(historyPath,JSON.stringify([{type:'largetext',path:path.join(textDir,onDisk),bytes:1,preview:'c'}]))
+  prune()
+  assert(fs.existsSync(path.join(textDir,onDisk)),'clipboard protects files referenced by the last successful save')
+  const invalidGuard=stale('d')
+  fs.writeFileSync(historyPath,'invalid')
+  prune()
+  assert(fs.existsSync(path.join(textDir,invalidGuard)),'clipboard does not prune when the saved history is unreadable')
+
+  const large={type:'text',text:'x'.repeat(c.entryTextLimit)}
+  const costly={type:'text',text:'\u0001'.repeat(c.entryTextLimit)}
+  const history=Array.from({length:100},()=>costly).concat([{type:'text',text:'small'}])
+  assert(c.addEntry(history,large,500).some(e=>e.text==='small'),'clipboard keeps small entries beyond entries that do not fit')
+  assert(c.parseHistory(JSON.stringify(history),500).some(e=>e.text==='small'),'clipboard load keeps small entries beyond entries that do not fit')
+  assert(c.entryTextLimit*6<c.historyBudget,'clipboard one inline copy cannot consume the entire budget')
+} finally {
+  fs.rmSync(temp,{recursive:true,force:true})
+}
+JS

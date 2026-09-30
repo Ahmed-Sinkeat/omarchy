@@ -213,7 +213,7 @@ const largePath = '/home/u/.local/state/omarchy/clipboard-text/' + hex('a') + '.
 const large = (path, bytes, preview) => ({ type: 'largetext', path, bytes, preview })
 const captureSource = fs.readFileSync(path.join(root, 'shell/plugins/clipboard/capture.sh'), 'utf8')
 
-assertEqual(clipboard.entryTextLimit, 2 * MiB, 'clipboard keeps up to 2 MiB of text inline')
+assertEqual(clipboard.entryTextLimit, 256 * 1024, 'clipboard keeps up to 256 KiB of text inline')
 assertEqual(Number((captureSource.match(/CLIPBOARD_ENTRY_LIMIT:-(\d+)/) || [])[1]), clipboard.entryTextLimit, 'clipboard capture and history agree on the inline limit')
 assertEqual(Number((captureSource.match(/CLIPBOARD_LARGE_LIMIT:-(\d+)/) || [])[1]), clipboard.largeTextLimit, 'clipboard capture and history agree on the large-copy limit')
 assert(clipboard.normalizeEntry({ type: 'text', text: 'a'.repeat(clipboard.entryTextLimit + 1) }) === null, 'clipboard rejects inline text over the limit')
@@ -234,7 +234,10 @@ assertDeepEqual(clipboard.largeTextNames([keptLarge, large('/etc/passwd', 1, 'x'
 // The loader must accept anything the writer can produce.
 const heavy = String.fromCodePoint(0x4e2d)
 let filled = []
-for (let i = 0; i < 24; i++) filled = clipboard.addEntry(filled, { type: 'text', text: i + heavy.repeat(512 * 1024) }, 500)
+for (let i = 0; i < 48; i++) {
+  filled = clipboard.addEntry(filled, { type: 'text', text: i + heavy.repeat(128 * 1024) }, 500)
+  assert(Buffer.byteLength(JSON.stringify(filled, null, 2) + '\n') <= clipboard.historyFileLimit, 'clipboard intermediate save stays within the loader ceiling')
+}
 filled = clipboard.addEntry(filled, { type: 'text', text: String.fromCodePoint(1).repeat(clipboard.entryTextLimit) }, 500)
 assert(Buffer.byteLength(JSON.stringify(filled, null, 2) + '\n') <= clipboard.historyFileLimit, 'clipboard never writes a history its loader would refuse')
 
@@ -517,6 +520,12 @@ pass "clipboard paste helper copy-only copies history entry text"
 [[ ! -e "$TMPDIR/wtype" ]] || fail "clipboard paste helper copy-only skips typing"
 pass "clipboard paste helper copy-only skips typing"
 
+printf '{"type":"text","text":"selected despite a failed save\\n日本"}' \
+  | WL_COPY_OUT="$TMPDIR/copied" WTYPE_OUT="$TMPDIR/wtype" PATH="$TMPDIR/bin:$PATH" \
+    "$ROOT/bin/omarchy-clipboard-paste-text" --copy-only --stdin
+[[ $(<"$TMPDIR/copied") == $'selected despite a failed save\n日本' ]] || fail "clipboard paste helper copies the selected snapshot without consulting disk"
+pass "clipboard paste helper copies the selected snapshot without consulting disk"
+
 printf 'image-data' >"$TMPDIR/image.png"
 rm -f "$TMPDIR/wtype"
 WL_COPY_OUT="$TMPDIR/copied" WTYPE_OUT="$TMPDIR/wtype" PATH="$TMPDIR/bin:$PATH" \
@@ -570,6 +579,23 @@ large_path=$(jq -r '.path // empty' <<<"$capture_output")
 [[ $(jq -r .type <<<"$capture_output") == largetext && -f $large_path && $(<"$large_path") == 0123456789abcdefX ]] || fail "clipboard capture keeps a copy over the inline limit as a file" "$capture_output"
 pass "clipboard capture keeps a copy over the inline limit as a file"
 
+printf '\001\000\001\000\001\000\001\000\001\000\001\000\001\000\001\000\001\000' >"$TMPDIR/bounds/large-control"
+capture_output=$(bounds_capture env CLIPBOARD_ENTRY_LIMIT=16 <"$TMPDIR/bounds/large-control")
+large_path=$(jq -r .path <<<"$capture_output")
+cmp "$TMPDIR/bounds/large-control" "$large_path" || fail "clipboard large-copy decoding preserves ambiguous control bytes"
+pass "clipboard large-copy decoding preserves ambiguous control bytes"
+
+printf 'large UTF-16 text 日本 😀' | iconv -f UTF-8 -t UTF-16LE >"$TMPDIR/bounds/large-utf16"
+capture_output=$(bounds_capture env CLIPBOARD_ENTRY_LIMIT=16 <"$TMPDIR/bounds/large-utf16")
+large_path=$(jq -r .path <<<"$capture_output")
+[[ $(<"$large_path") == 'large UTF-16 text 日本 😀' ]] || fail "clipboard large-copy decoding converts UTF-16 text"
+pass "clipboard large-copy decoding converts UTF-16 text"
+
+touch -d '5 minutes ago' "$large_path"
+bounds_capture env CLIPBOARD_ENTRY_LIMIT=16 <"$TMPDIR/bounds/large-utf16" >/dev/null
+(( $(date +%s) - $(stat -c %Y "$large_path") < 60 )) || fail "clipboard re-copy refreshes the large-copy timestamp"
+pass "clipboard re-copy refreshes the large-copy timestamp"
+
 capture_output=$(head -c 33 /dev/zero | tr '\0' a | bounds_capture env CLIPBOARD_ENTRY_LIMIT=16 CLIPBOARD_LARGE_LIMIT=32)
 [[ $capture_output == '{"type":"skipped","reason":"too-large"}' ]] || fail "clipboard capture skips a copy over the large-copy limit" "$capture_output"
 pass "clipboard capture skips a copy over the large-copy limit"
@@ -616,3 +642,17 @@ printf k >"$text_dir/$keep"; printf d >"$text_dir/$drop"; touch -d '2 minutes ag
 bash "$ROOT/shell/plugins/clipboard/prune-text.sh" "$text_dir" "$TMPDIR/bounds/prune/omarchy/clipboard-history.json" "$keep"
 [[ -f $text_dir/$keep && ! -e $text_dir/$drop ]] || fail "clipboard deletes large copies history no longer uses"
 pass "clipboard deletes large copies history no longer uses"
+
+cat >"$TMPDIR/bounds/bin/wl-paste" <<'SCRIPT'
+#!/bin/bash
+sleep 10
+SCRIPT
+start=$SECONDS
+capture_output=$(printf text | bounds_capture env CLIPBOARD_READ_DEADLINE=1)
+(( SECONDS - start <= 3 )) && [[ $capture_output == '{"type":"skipped","reason":"types-unavailable"}' ]] || fail "clipboard capture bounds type detection at the read deadline"
+pass "clipboard capture bounds type detection at the read deadline"
+
+printf '{"type":"text","text":"https://example.com/selected"}' \
+  | BROWSER_OUT="$TMPDIR/browser" PATH="$TMPDIR/bin:$PATH" "$ROOT/bin/omarchy-clipboard-open" --stdin
+[[ $(<"$TMPDIR/browser") == 'https://example.com/selected' ]] || fail "clipboard open helper opens the selected snapshot without consulting disk"
+pass "clipboard open helper opens the selected snapshot without consulting disk"

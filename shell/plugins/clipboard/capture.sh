@@ -9,7 +9,7 @@ set -o pipefail
 # Largest text entry kept inline in history, in bytes. ClipboardHistory.js holds
 # the same limit in UTF-16 units, and a byte count is never smaller than the unit
 # count of the text it decodes to, so an entry accepted here is accepted there.
-ENTRY_LIMIT=${CLIPBOARD_ENTRY_LIMIT:-2097152}
+ENTRY_LIMIT=${CLIPBOARD_ENTRY_LIMIT:-262144}
 # A copy over ENTRY_LIMIT is kept as a file with a short preview in history, up to
 # this size; anything larger is reported as skipped.
 LARGE_LIMIT=${CLIPBOARD_LARGE_LIMIT:-268435456}
@@ -30,9 +30,12 @@ PREVIEW_BYTES=8192
 tmp=
 converted=
 trap 'rm -f -- "$tmp" "$converted"' EXIT
-trap 'exit 143' TERM INT HUP
 
-types=$(wl-paste --list-types 2>/dev/null || true)
+types=$(timeout -k 1 "$READ_DEADLINE" wl-paste --list-types 2>/dev/null)
+if (( $? != 0 )); then
+  printf '{"type":"skipped","reason":"types-unavailable"}\n'
+  exit 0
+fi
 
 if [[ ${CLIPBOARD_STATE:-} == "sensitive" ]] || grep -qx 'x-kde-passwordManagerHint' <<<"$types"; then
   exit 0
@@ -148,7 +151,8 @@ emit_large_text() {
 
   if [[ -n $encoding ]]; then
     converted=$(mktemp --tmpdir="$TEXT_DIR" clipboard.XXXXXX) || return 0
-    if iconv -f "$encoding" -t UTF-8 "$tmp" >"$converted" 2>/dev/null; then
+    if iconv -f "$encoding" -t UTF-8 "$tmp" >"$converted" 2>/dev/null \
+      && { [[ $encoding == "UTF-16" ]] || perl -e 'while (read(STDIN, my $chunk, 65536)) { exit 1 if $chunk =~ /[\x00-\x08\x0E-\x1A\x1C-\x1F]/ }' <"$converted"; }; then
       mv -f -- "$converted" "$tmp"
     else
       rm -f -- "$converted"

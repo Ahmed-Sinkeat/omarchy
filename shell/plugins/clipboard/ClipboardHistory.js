@@ -2,7 +2,7 @@
 // through the watcher line, every save and every startup load, at several times
 // its size each time. Text is measured in UTF-16 units; a UTF-8 byte count is
 // never smaller, so an entry capture.sh accepts by bytes is always accepted here.
-var entryTextLimit = 2 * 1024 * 1024
+var entryTextLimit = 256 * 1024
 // The longest line the watcher can legitimately send: an entry at the limit
 // whose every character JSON-escapes to six.
 var captureLineLimit = entryTextLimit * 6 + 64
@@ -105,7 +105,7 @@ function parseHistory(raw, limit) {
     if (!entry) continue
     if (entry.type === "largetext" && largeUsed + entry.bytes > largeTextBudget) continue
     var size = entrySize(entry)
-    if (next.length > 0 && used + size > historyBudget) break
+    if (used + size > historyBudget) continue
     if (entry.type === "largetext") largeUsed += entry.bytes
     used += size
     next.push(entry)
@@ -134,7 +134,7 @@ function addEntry(history, entry, limit) {
     if (!existing || entryKey(existing) === key) continue
     if (existing.type === "largetext" && largeUsed + existing.bytes > largeTextBudget) continue
     var size = entrySize(existing)
-    if (used + size > historyBudget) break
+    if (used + size > historyBudget) continue
     if (existing.type === "largetext") largeUsed += existing.bytes
     used += size
     next.push(existing)
@@ -247,7 +247,8 @@ function fullText(entry) {
 // The picker only ever searches and renders a prefix of an entry, so scan and
 // render just that much. A single huge paste otherwise costs hundreds of
 // megabytes of string work on every keystroke and stalls the whole shell.
-// Pasting reads the full entry back from history by index, so nothing is lost.
+// Actions receive the full selected entry through stdin, so rendering a prefix
+// cannot truncate a paste or select a different entry after a failed save.
 var displayTextLimit = 8192
 
 function cappedEntry(entry) {
