@@ -30,6 +30,10 @@ Item {
   property bool watchersStarted: false
   property var capturesDuringLoad: []
   property bool saveRequested: false
+  // Set by "Delete entire clipboard history": the next save also removes the
+  // recovery backups, so no copy of the cleared history stays on disk.
+  property bool clearBackupsRequested: false
+  readonly property string saveFailedNotice: "Clipboard history could not be saved · previous data kept"
   property bool reloadRequested: true
   // Shares the [menu] surface tokens — themes that style the menu also
   // style the clipboard. Selected-row colors composed in the
@@ -101,6 +105,8 @@ Item {
     if (root.saveRequested && root.historyWritable) {
       root.saveRequested = false
       saveProc.snapshot = JSON.stringify(root.history.slice(0, root.historyLimit))
+      saveProc.clearBackups = root.clearBackupsRequested
+      root.clearBackupsRequested = false
       saveProc.stdinEnabled = true
       saveProc.running = true
     } else if (root.reloadRequested) {
@@ -154,6 +160,8 @@ Item {
   function confirmClearHistory() {
     if (!root.historyWritable) return
     root.history = ClipboardHistory.clearHistory()
+    root.historyNotice = ""
+    root.clearBackupsRequested = true
     root.saveHistory()
     root.selectedIndex = 0
     root.cursorActive = false
@@ -357,7 +365,9 @@ Item {
   Process {
     id: saveProc
     property string snapshot: ""
+    property bool clearBackups: false
     command: ["bash", root.omarchyPath + "/shell/plugins/clipboard/save-history.sh", root.historyPath, String(ClipboardHistory.historyFileLimit)]
+      .concat(saveProc.clearBackups ? ["--clear-backups"] : [])
     stderr: StdioCollector { id: saveWarnings; waitForEnd: true }
     onStarted: {
       saveProc.write(saveProc.snapshot)
@@ -365,9 +375,12 @@ Item {
       saveProc.snapshot = ""
     }
     onExited: function(exitCode) {
-      if (exitCode === 0) root.pruneText()
-      else {
-        root.historyNotice = "Clipboard history could not be saved · previous data kept"
+      if (exitCode === 0) {
+        if (root.historyNotice === root.saveFailedNotice) root.historyNotice = ""
+        root.pruneText()
+      } else {
+        if (saveProc.clearBackups) root.clearBackupsRequested = true
+        root.historyNotice = root.saveFailedNotice
         console.warn("clipboard: history save failed: " + saveWarnings.text.trim())
         // Preserve the unsaved in-memory entries; an own-file notification
         // from an earlier write must not reload an older snapshot over them.

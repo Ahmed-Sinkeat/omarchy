@@ -334,6 +334,14 @@ def reject(path):
   return b'[]'
 
 
+def clear_backups(path):
+  # The user cleared all history, so the recovery copies of it go too. A rejected
+  # directory holds nothing this helper wrote, so it is left alone.
+  for backup in list(path.parent.glob(path.name + '.rejected-*')) + list(path.parent.glob(path.name + '.migrated-*')):
+    if backup.is_symlink() or not backup.is_dir():
+      backup.unlink(missing_ok=True)
+
+
 def load_history(path, directory, ceiling):
   try:
     info = path.lstat()
@@ -386,11 +394,14 @@ def main():
   args = sys.argv[2:] if saving else sys.argv[1:]
   path = Path(args[0])
   ceiling = int(args[1])
+  clearing = saving and args[2:] == ['--clear-backups']
   state = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state')
   directory = state / 'omarchy/clipboard-text'
   with history_lock(path):
     if saving:
       save_history(path, ceiling)
+      if clearing:
+        clear_backups(path)
     else:
       sys.stdout.buffer.write(load_history(path, directory, ceiling))
 

@@ -97,4 +97,17 @@ m.main()
     check(all(p.name.startswith('clipboard-history.json') for p in folder.glob('clipboard-history.*')), 'clipboard failed atomic commit removes its temporary file')
   finally:
     storage.os.replace = replace
+
+  cleared = folder / 'cleared'
+  cleared.mkdir()
+  history = cleared / 'clipboard-history.json'
+  history.write_text('[]')
+  save = ['bash', str(root / 'shell/plugins/clipboard/save-history.sh'), str(history), str(storage.HISTORY_BUDGET)]
+  for name in ['migrated-1', 'rejected-2']:
+    (cleared / ('clipboard-history.json.' + name)).write_text('["old secret"]')
+  result = subprocess.run(save, input=b'[]', capture_output=True)
+  check(result.returncode == 0 and len(list(cleared.glob('*.migrated-*')) + list(cleared.glob('*.rejected-*'))) == 2, 'clipboard ordinary save keeps recovery backups')
+  result = subprocess.run(save + ['--clear-backups'], input=b'[]', capture_output=True)
+  check(result.returncode == 0 and history.read_text() == '[]', 'clipboard clear saves the empty history: ' + result.stderr.decode().strip())
+  check(not list(cleared.glob('*.migrated-*')) and not list(cleared.glob('*.rejected-*')), 'clipboard clear removes recovery backups of the cleared history')
 PY

@@ -54,6 +54,16 @@ assertEqual(JSON.parse(saveProc.snapshot)[0].text,'newest','clipboard queued sav
 saveProc.running=false
 pending.pumpStorage()
 assert(loadProc.running && !pending.historyWritable,'clipboard reload starts after queued saves complete')
+loadProc.running=false
+pending.historyWritable=true
+pending.clearBackupsRequested=true
+pending.saveHistory()
+assert(saveProc.clearBackups===true && !pending.clearBackupsRequested,'clipboard clear asks one save to remove recovery backups')
+saveProc.running=false
+pending.saveHistory()
+assert(saveProc.clearBackups===false,'clipboard later saves keep recovery backups')
+saveProc.running=false
+assert(/historyNotice === root\.saveFailedNotice\) root\.historyNotice = ""/.test(qml),'clipboard clears the save failure notice after a successful save')
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'clipboard-upgrade-'))
 const state = path.join(temp, 'omarchy')
 const textDir = path.join(state, 'clipboard-text')
