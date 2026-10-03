@@ -4,7 +4,7 @@ set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/base-test.sh"
 
-migration="$ROOT/migrations/1788439900.sh"
+migration="$ROOT/migrations/1791071225.sh"
 [[ -f $migration ]] || fail "Helium password-store migration exists"
 
 default_flags="$ROOT/config/helium-browser-flags.conf"
