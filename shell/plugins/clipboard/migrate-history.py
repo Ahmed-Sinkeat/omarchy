@@ -339,7 +339,12 @@ def clear_backups(path):
   # directory holds nothing this helper wrote, so it is left alone.
   for backup in list(path.parent.glob(path.name + '.rejected-*')) + list(path.parent.glob(path.name + '.migrated-*')):
     if backup.is_symlink() or not backup.is_dir():
-      backup.unlink(missing_ok=True)
+      # The cleared history is already committed, so a backup that cannot be
+      # removed is reported on its own rather than as a failed save.
+      try:
+        backup.unlink(missing_ok=True)
+      except OSError as error:
+        print('clipboard: could not remove recovery backup: ' + str(error), file=sys.stderr)
 
 
 def load_history(path, directory, ceiling):

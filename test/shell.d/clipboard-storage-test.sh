@@ -110,4 +110,24 @@ m.main()
   result = subprocess.run(save + ['--clear-backups'], input=b'[]', capture_output=True)
   check(result.returncode == 0 and history.read_text() == '[]', 'clipboard clear saves the empty history: ' + result.stderr.decode().strip())
   check(not list(cleared.glob('*.migrated-*')) and not list(cleared.glob('*.rejected-*')), 'clipboard clear removes recovery backups of the cleared history')
+  stuck = folder / 'stuck'
+  stuck.mkdir()
+  history = stuck / 'clipboard-history.json'
+  history.write_text('["kept until cleared"]')
+  (stuck / 'clipboard-history.json.migrated-1').write_text('["old secret"]')
+  real_unlink = Path.unlink
+  def fail_backup_unlink(self, *args, **kwargs):
+    if '.migrated-' in self.name:
+      raise PermissionError('simulated undeletable backup')
+    return real_unlink(self, *args, **kwargs)
+  Path.unlink = fail_backup_unlink
+  warnings = io.StringIO()
+  try:
+    with contextlib.redirect_stderr(warnings):
+      storage.clear_backups(history)
+  finally:
+    Path.unlink = real_unlink
+  check('could not remove recovery backup' in warnings.getvalue(), 'clipboard clear reports a backup it cannot remove without failing the save')
+  check(history.read_text() == '["kept until cleared"]', 'clipboard backup cleanup never touches the committed history')
+  check('saveWarnings.text.indexOf("could not remove recovery backup")' in (root / 'shell/plugins/clipboard/Clipboard.qml').read_text(), 'clipboard picker explains a backup that could not be removed')
 PY

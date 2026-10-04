@@ -377,6 +377,8 @@ Item {
     onExited: function(exitCode) {
       if (exitCode === 0) {
         if (root.historyNotice === root.saveFailedNotice) root.historyNotice = ""
+        if (saveWarnings.text.indexOf("could not remove recovery backup") >= 0)
+          root.historyNotice = "History cleared · some recovery backups could not be removed"
         root.pruneText()
       } else {
         if (saveProc.clearBackups) root.clearBackupsRequested = true
